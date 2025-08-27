@@ -1,0 +1,3 @@
+# .bluetooth.env.example
+BT_HEADPHONES="XX:XX:XX:XX:XX:XX"
+BT_MOUSE="YY:YY:YY:YY:YY:YY"

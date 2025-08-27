@@ -17,33 +17,33 @@ else
 fi
 
 forget_bluetooth() {
-  echo "Checking connection status for $BT_HEADPHONES..."
+  echo "Checking connection status for $BT_MOUSE..."
 
   # If not connected, skip the logic
-  if ! bluetoothctl info "$BT_HEADPHONES" 2>/dev/null | grep -q "Connected: yes"; then
-    echo "Device $BT_HEADPHONES is already disconnected. Skipping removal."
-    notify-send "Bluetooth Disconnect" "$BT_HEADPHONES is already disconnected"
+  if ! bluetoothctl info "$BT_MOUSE" 2>/dev/null | grep -q "Connected: yes"; then
+    echo "Device $BT_MOUSE is already disconnected. Skipping removal."
+    notify-send "Bluetooth Disconnect" "$BT_MOUSE is already disconnected"
     return 0
   fi
 
-  echo "Disconnecting from $BT_HEADPHONES..."
+  echo "Disconnecting from $BT_MOUSE..."
 
   # Explicitly disconnect
-  bluetoothctl disconnect "$BT_HEADPHONES" >/dev/null
+  bluetoothctl disconnect "$BT_MOUSE" >/dev/null
   sleep 1
 
   # Then remove device
-  bluetoothctl remove "$BT_HEADPHONES" >/dev/null
+  bluetoothctl remove "$BT_MOUSE" >/dev/null
   sleep 1
 
   # Check again if still connected
-  if bluetoothctl info "$BT_HEADPHONES" 2>/dev/null | grep -q "Connected: yes"; then
+  if bluetoothctl info "$BT_MOUSE" 2>/dev/null | grep -q "Connected: yes"; then
     echo "Device is still connected."
-    notify-send "Bluetooth Disconnect" "Failed to disconnect from $BT_HEADPHONES"
+    notify-send "Bluetooth Disconnect" "Failed to disconnect from $BT_MOUSE"
     return 1
   else
-    echo "Disconnected and removed $BT_HEADPHONES."
-    notify-send "Bluetooth Disconnect" "Disconnected from $BT_HEADPHONES"
+    echo "Disconnected and removed $BT_MOUSE."
+    notify-send "Bluetooth Disconnect" "Disconnected from $BT_MOUSE"
     return 0
   fi
 }

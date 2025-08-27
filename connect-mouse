@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Path to the .bluetooth.env file
+ENV_FILE="$SCRIPT_DIR/.bluetooth.env"
+
+# Source the environment file if it exists
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+else
+  echo "Environment file $ENV_FILE not found."
+  notify-send "Bluetooth Connect" "Missing .bluetooth.env file"
+  exit 1
+fi
+
+connect_bluetooth() {
+  if [ -z "$BT_MOUSE" ]; then
+    echo "BT_MOUSE is not set."
+    notify-send "Bluetooth Connect" "BT_MOUSE variable is not set."
+    return 1
+  fi
+
+  echo "Scanning for $BT_MOUSE..."
+  bluetoothctl --timeout 10 scan on >/dev/null &
+  sleep 10
+  bluetoothctl scan off >/dev/null
+
+  # Confirm device shows up in list
+  if ! bluetoothctl devices | grep -q "$BT_MOUSE"; then
+    echo "Could not detect device $BT_MOUSE during scan."
+    notify-send "Bluetooth Connect" "Device $BT_MOUSE not found during scan."
+    return 1
+  fi
+
+  echo "Pairing with $BT_MOUSE..."
+  bluetoothctl pair "$BT_MOUSE" >/dev/null
+  sleep 2
+
+  if bluetoothctl info "$BT_MOUSE" | grep -q "Paired: yes"; then
+    echo "Device is paired."
+  else
+    echo "Pairing failed."
+    notify-send "Bluetooth Connect" "Pairing failed for $BT_MOUSE"
+    return 1
+  fi
+
+  echo "Trusting $BT_MOUSE..."
+  bluetoothctl trust "$BT_MOUSE" >/dev/null
+  sleep 1
+
+  if bluetoothctl info "$BT_MOUSE" | grep -q "Trusted: yes"; then
+    echo "Device is trusted."
+  else
+    echo "Trusting failed."
+    notify-send "Bluetooth Connect" "Trusting failed for $BT_MOUSE"
+    return 1
+  fi
+
+  echo "Connecting to $BT_MOUSE..."
+  bluetoothctl connect "$BT_MOUSE" >/dev/null
+  sleep 2
+
+  if bluetoothctl info "$BT_MOUSE" | grep -q "Connected: yes"; then
+    echo "Connected to $BT_MOUSE."
+    notify-send "Bluetooth Connect" "Connected, paired, and trusted $BT_MOUSE"
+    return 0
+  else
+    echo "Failed to connect to $BT_MOUSE."
+    notify-send "Bluetooth Connect" "Connection failed for $BT_MOUSE"
+    return 1
+  fi
+}
+
+connect_bluetooth

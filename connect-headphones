@@ -17,63 +17,61 @@ else
 fi
 
 connect_bluetooth() {
-  if [ -z "$BT_MAC" ]; then
-    echo "BT_MAC is not set."
-    notify-send "Bluetooth Connect" "BT_MAC variable is not set."
+  if [ -z "$BT_HEADPHONES" ]; then
+    echo "BT_HEADPHONES is not set."
+    notify-send "Bluetooth Connect" "BT_HEADPHONES variable is not set."
     return 1
   fi
 
-  echo "Scanning for $BT_MAC..."
+  echo "Scanning for $BT_HEADPHONES..."
   bluetoothctl --timeout 10 scan on >/dev/null &
   sleep 10
   bluetoothctl scan off >/dev/null
 
   # Confirm device shows up in list
-  if ! bluetoothctl devices | grep -q "$BT_MAC"; then
-    echo "Could not detect device $BT_MAC during scan."
-    notify-send "Bluetooth Connect" "Device $BT_MAC not found during scan."
+  if ! bluetoothctl devices | grep -q "$BT_HEADPHONES"; then
+    echo "Could not detect device $BT_HEADPHONES during scan."
+    notify-send "Bluetooth Connect" "Device $BT_HEADPHONES not found during scan."
     return 1
   fi
 
-  echo "Pairing with $BT_MAC..."
-  bluetoothctl pair "$BT_MAC" >/dev/null
+  echo "Pairing with $BT_HEADPHONES..."
+  bluetoothctl pair "$BT_HEADPHONES" >/dev/null
   sleep 2
 
-  if bluetoothctl info "$BT_MAC" | grep -q "Paired: yes"; then
+  if bluetoothctl info "$BT_HEADPHONES" | grep -q "Paired: yes"; then
     echo "Device is paired."
   else
     echo "Pairing failed."
-    notify-send "Bluetooth Connect" "Pairing failed for $BT_MAC"
+    notify-send "Bluetooth Connect" "Pairing failed for $BT_HEADPHONES"
     return 1
   fi
 
-  echo "Trusting $BT_MAC..."
-  bluetoothctl trust "$BT_MAC" >/dev/null
+  echo "Trusting $BT_HEADPHONES..."
+  bluetoothctl trust "$BT_HEADPHONES" >/dev/null
   sleep 1
 
-  if bluetoothctl info "$BT_MAC" | grep -q "Trusted: yes"; then
+  if bluetoothctl info "$BT_HEADPHONES" | grep -q "Trusted: yes"; then
     echo "Device is trusted."
   else
     echo "Trusting failed."
-    notify-send "Bluetooth Connect" "Trusting failed for $BT_MAC"
+    notify-send "Bluetooth Connect" "Trusting failed for $BT_HEADPHONES"
     return 1
   fi
 
-  echo "Connecting to $BT_MAC..."
-  bluetoothctl connect "$BT_MAC" >/dev/null
+  echo "Connecting to $BT_HEADPHONES..."
+  bluetoothctl connect "$BT_HEADPHONES" >/dev/null
   sleep 2
 
-  if bluetoothctl info "$BT_MAC" | grep -q "Connected: yes"; then
-    echo "Connected to $BT_MAC."
-    notify-send "Bluetooth Connect" "Connected, paired, and trusted $BT_MAC"
+  if bluetoothctl info "$BT_HEADPHONES" | grep -q "Connected: yes"; then
+    echo "Connected to $BT_HEADPHONES."
+    notify-send "Bluetooth Connect" "Connected, paired, and trusted $BT_HEADPHONES"
     return 0
   else
-    echo "Failed to connect to $BT_MAC."
-    notify-send "Bluetooth Connect" "Connection failed for $BT_MAC"
+    echo "Failed to connect to $BT_HEADPHONES."
+    notify-send "Bluetooth Connect" "Connection failed for $BT_HEADPHONES"
     return 1
   fi
 }
 
-# pause_all_media
-# forget_bluetooth
 connect_bluetooth

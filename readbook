@@ -5,12 +5,18 @@ BOOK_DIR="$HOME/Documents"
 
 # Find all supported book types recursively
 BOOK=$(find "$BOOK_DIR" \
-  -type f \( -iname "*.pdf" -o -iname "*.epub" -o -iname "*.mobi" -o -iname "*.djvu" \) 2>/dev/null \
-  | rofi -dmenu -i -p "📚 Select a book")
+  -type f \( -iname "*.pdf" -o -iname "*.epub" -o -iname "*.mobi" -o -iname "*.djvu" \) 2>/dev/null |
+  rofi -dmenu -i -p "📚 Select a book")
 
-# Launch KOReader if a selection was made
+# check if selected value is non zero
 if [[ -n "$BOOK" ]]; then
+  # if PDF open with zathura
+  if [[ "$BOOK" == *"pdf"* ]]; then
+    zathura "$BOOK" &
+  # if any other book format open with KOReader
+  else
     koreader "$BOOK" &
+  fi
 else
-    notify-send "KOReader" "No book selected."
+  notify-send "KOReader" "No book selected."
 fi

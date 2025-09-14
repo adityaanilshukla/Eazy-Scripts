@@ -1,13 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Path to the .bluetooth.env file
 ENV_FILE="$SCRIPT_DIR/.bluetooth.env"
 
-# Source the environment file if it exists
-if [ -f "$ENV_FILE" ]; then
+if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$ENV_FILE"
 else
@@ -16,62 +13,143 @@ else
   exit 1
 fi
 
-connect_bluetooth() {
-  if [ -z "$BT_MOUSE" ]; then
-    echo "BT_MOUSE is not set."
-    notify-send "Bluetooth Connect" "BT_MOUSE variable is not set."
-    return 1
-  fi
+# Small helpers
+have() { command -v "$1" >/dev/null 2>&1; }
+bt() { bluetoothctl --timeout "${BT_SCAN_TIMEOUT:-10}" "$@"; } # default 10s timeout
 
-  echo "Scanning for $BT_MOUSE..."
-  bluetoothctl --timeout 10 scan on >/dev/null &
-  sleep 10
-  bluetoothctl scan off >/dev/null
+notify() {
+  if have notify-send; then notify-send "Bluetooth Connect" "$1"; fi
+  echo "$1"
+}
 
-  # Confirm device shows up in list
-  if ! bluetoothctl devices | grep -q "$BT_MOUSE"; then
-    echo "Could not detect device $BT_MOUSE during scan."
-    notify-send "Bluetooth Connect" "Device $BT_MOUSE not found during scan."
-    return 1
-  fi
-
-  echo "Pairing with $BT_MOUSE..."
-  bluetoothctl pair "$BT_MOUSE" >/dev/null
-  sleep 2
-
-  if bluetoothctl info "$BT_MOUSE" | grep -q "Paired: yes"; then
-    echo "Device is paired."
-  else
-    echo "Pairing failed."
-    notify-send "Bluetooth Connect" "Pairing failed for $BT_MOUSE"
-    return 1
-  fi
-
-  echo "Trusting $BT_MOUSE..."
-  bluetoothctl trust "$BT_MOUSE" >/dev/null
-  sleep 1
-
-  if bluetoothctl info "$BT_MOUSE" | grep -q "Trusted: yes"; then
-    echo "Device is trusted."
-  else
-    echo "Trusting failed."
-    notify-send "Bluetooth Connect" "Trusting failed for $BT_MOUSE"
-    return 1
-  fi
-
-  echo "Connecting to $BT_MOUSE..."
-  bluetoothctl connect "$BT_MOUSE" >/dev/null
-  sleep 2
-
-  if bluetoothctl info "$BT_MOUSE" | grep -q "Connected: yes"; then
-    echo "Connected to $BT_MOUSE."
-    notify-send "Bluetooth Connect" "Connected, paired, and trusted $BT_MOUSE"
+# Try to detect whether a given MAC looks like a mouse/HID device
+is_mouse() {
+  local mac="$1"
+  # Common hints: HID UUID (00001124-...), Icon: input-mouse, or Appearance Mouse (0x03C2)
+  if bluetoothctl info "$mac" 2>/dev/null | grep -qiE \
+    'UUID:.*Human Interface Device|Icon:\s*input-mouse|Appearance:\s*0x03c2'; then
     return 0
-  else
-    echo "Failed to connect to $BT_MOUSE."
-    notify-send "Bluetooth Connect" "Connection failed for $BT_MOUSE"
+  fi
+  return 1
+}
+
+# Return first MAC that matches a name (case-insensitive) from paired list, then all devices.
+find_mac_by_name() {
+  local name_re="$1"
+  # 1) Look in paired devices first (stable identity even if RPA rotates)
+  local mac
+  mac="$(bluetoothctl devices Paired | grep -iF "$name_re" | awk '{print $2}' | head -n1 || true)"
+  if [[ -n "${mac:-}" ]]; then
+    echo "$mac"
+    return 0
+  fi
+
+  # 2) If not found, do a quick scan to refresh the cache, then search all devices
+  bt scan on >/dev/null || true
+  sleep 1
+  bt scan off >/dev/null || true
+
+  mac="$(bluetoothctl devices | grep -iF "$name_re" | awk '{print $2}' | head -n1 || true)"
+  if [[ -n "${mac:-}" ]]; then
+    echo "$mac"
+    return 0
+  fi
+
+  return 1
+}
+
+connect_bluetooth() {
+  local mac=""
+
+  # Resolve MAC: prefer name, then explicit MAC if provided.
+  if [[ -n "${BT_MOUSE_NAME:-}" ]]; then
+    mac="$(find_mac_by_name "$BT_MOUSE_NAME" || true)"
+    if [[ -z "$mac" ]]; then
+      notify "Scanning for \"$BT_MOUSE_NAME\"..."
+      bt scan on >/dev/null || true
+      sleep "${BT_ACTIVE_SCAN_SECS:-12}"
+      bt scan off >/dev/null || true
+      mac="$(find_mac_by_name "$BT_MOUSE_NAME" || true)"
+    fi
+  fi
+
+  # If name path failed, fall back to env MAC (if supplied)
+  if [[ -z "$mac" && -n "${BT_MOUSE_MAC:-}" ]]; then
+    mac="$BT_MOUSE_MAC"
+  fi
+
+  if [[ -z "$mac" ]]; then
+    notify "No device name or MAC resolved. Set BT_MOUSE_NAME or BT_MOUSE_MAC in .bluetooth.env."
     return 1
   fi
+
+  # If the device is already connected, exit early
+  if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+    notify "Already connected to $mac."
+    return 0
+  fi
+
+  # If the device isn't known yet, try a brief scan to populate the controller's cache
+  if ! bluetoothctl info "$mac" >/dev/null 2>&1; then
+    notify "Refreshing device cache for $mac..."
+    bt scan on >/dev/null || true
+    sleep "${BT_ACTIVE_SCAN_SECS:-12}"
+    bt scan off >/dev/null || true
+  fi
+
+  # Pair if needed (idempotent)
+  if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Paired: yes"; then
+    notify "Pairing with $mac..."
+    bluetoothctl pair "$mac" >/dev/null || {
+      notify "Pairing failed for $mac"
+      return 1
+    }
+  fi
+
+  # Trust (so it auto-reconnects)
+  if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Trusted: yes"; then
+    notify "Trusting $mac..."
+    bluetoothctl trust "$mac" >/dev/null || {
+      notify "Trusting failed for $mac"
+      return 1
+    }
+  fi
+
+  # Optional sanity check that it’s actually a mouse
+  if ! is_mouse "$mac"; then
+    echo "Warning: $mac does not look like a mouse/HID. Continuing anyway..." >&2
+  fi
+
+  notify "Connecting to $mac..."
+  bluetoothctl connect "$mac" >/dev/null || true
+  sleep 2
+
+  if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+    notify "Connected, paired, and trusted ($mac)."
+    return 0
+  fi
+
+  # If the address might have rotated, try to rediscover by name and connect again
+  if [[ -n "${BT_MOUSE_NAME:-}" ]]; then
+    notify "Address may have rotated; attempting rediscovery for \"$BT_MOUSE_NAME\"..."
+    bt scan on >/dev/null || true
+    sleep "${BT_ACTIVE_SCAN_SECS:-12}"
+    bt scan off >/dev/null || true
+    local new_mac
+    new_mac="$(find_mac_by_name "$BT_MOUSE_NAME" || true)"
+    if [[ -n "$new_mac" && "$new_mac" != "$mac" ]]; then
+      notify "Trying new address $new_mac..."
+      bluetoothctl connect "$new_mac" >/dev/null || true
+      sleep 2
+      if bluetoothctl info "$new_mac" 2>/dev/null | grep -q "Connected: yes"; then
+        notify "Connected via new address ($new_mac)."
+        return 0
+      fi
+    fi
+  fi
+
+  notify "Connection failed."
+  return 1
 }
 
 connect_bluetooth

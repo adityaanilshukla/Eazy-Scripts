@@ -130,5 +130,4 @@ pause_all_media() {
   playerctl --all-players pause 2>/dev/null || true
 }
 
-pause_all_media
 forget_bluetooth

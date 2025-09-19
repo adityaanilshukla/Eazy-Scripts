@@ -63,13 +63,8 @@ connect_bluetooth() {
     fi
   fi
 
-  # If name path failed, fall back to env MAC (if supplied)
-  if [[ -z "$mac" && -n "${BT_MOUSE_MAC:-}" ]]; then
-    mac="$BT_MOUSE_MAC"
-  fi
-
   if [[ -z "$mac" ]]; then
-    notify "No device name or MAC resolved. Set BT_MOUSE_NAME or BT_MOUSE_MAC in .bluetooth.env."
+    notify "No device name. Set BT_MOUSE_NAME in .bluetooth.env."
     return 1
   fi
 

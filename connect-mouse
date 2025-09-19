@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,17 +21,6 @@ bt() { bluetoothctl --timeout "${BT_SCAN_TIMEOUT:-10}" "$@"; } # default 10s tim
 notify() {
   if have notify-send; then notify-send "Bluetooth Connect" "$1"; fi
   echo "$1"
-}
-
-# Try to detect whether a given MAC looks like a mouse/HID device
-is_mouse() {
-  local mac="$1"
-  # Common hints: HID UUID (00001124-...), Icon: input-mouse, or Appearance Mouse (0x03C2)
-  if bluetoothctl info "$mac" 2>/dev/null | grep -qiE \
-    'UUID:.*Human Interface Device|Icon:\s*input-mouse|Appearance:\s*0x03c2'; then
-    return 0
-  fi
-  return 1
 }
 
 # Return first MAC that matches a name (case-insensitive) from paired list, then all devices.
@@ -113,20 +103,6 @@ connect_bluetooth() {
       notify "Trusting failed for $mac"
       return 1
     }
-  fi
-
-  # Optional sanity check that it’s actually a mouse
-  if ! is_mouse "$mac"; then
-    echo "Warning: $mac does not look like a mouse/HID. Continuing anyway..." >&2
-  fi
-
-  notify "Connecting to $mac..."
-  bluetoothctl connect "$mac" >/dev/null || true
-  sleep 2
-
-  if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
-    notify "Connected, paired, and trusted ($mac)."
-    return 0
   fi
 
   # If the address might have rotated, try to rediscover by name and connect again

@@ -100,25 +100,6 @@ connect_bluetooth() {
     }
   fi
 
-  # If the address might have rotated, try to rediscover by name and connect again
-  if [[ -n "${BT_MOUSE_NAME:-}" ]]; then
-    notify "Address may have rotated; attempting rediscovery for \"$BT_MOUSE_NAME\"..."
-    bt scan on >/dev/null || true
-    sleep "${BT_ACTIVE_SCAN_SECS:-12}"
-    bt scan off >/dev/null || true
-    local new_mac
-    new_mac="$(find_mac_by_name "$BT_MOUSE_NAME" || true)"
-    if [[ -n "$new_mac" && "$new_mac" != "$mac" ]]; then
-      notify "Trying new address $new_mac..."
-      bluetoothctl connect "$new_mac" >/dev/null || true
-      sleep 2
-      if bluetoothctl info "$new_mac" 2>/dev/null | grep -q "Connected: yes"; then
-        notify "Connected via new address ($new_mac)."
-        return 0
-      fi
-    fi
-  fi
-
   notify "Connection failed."
   return 1
 }

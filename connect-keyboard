@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.bluetooth.env"
+
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+else
+  echo "Environment file $ENV_FILE not found."
+  notify-send "Bluetooth Connect" "Missing .bluetooth.env file"
+  exit 1
+fi
+
+# Small helpers
+have() { command -v "$1" >/dev/null 2>&1; }
+bt() { bluetoothctl --timeout "${BT_SCAN_TIMEOUT:-10}" "$@"; } # default 10s timeout
+
+notify() {
+  if have notify-send; then notify-send "Bluetooth Connect" "$1"; fi
+  echo "$1"
+}
+
+# Return first MAC that matches a name (case-insensitive) from paired list, then all devices.
+find_mac_by_name() {
+  local name_re="$1"
+  # 1) Look in paired devices first (stable identity even if RPA rotates)
+  local mac
+  mac="$(bluetoothctl devices Paired | grep -iF "$name_re" | awk '{print $2}' | head -n1 || true)"
+  if [[ -n "${mac:-}" ]]; then
+    echo "$mac"
+    return 0
+  fi
+
+  # 2) If not found, do a quick scan to refresh the cache, then search all devices
+  bt scan on >/dev/null || true
+  sleep 1
+  bt scan off >/dev/null || true
+
+  mac="$(bluetoothctl devices | grep -iF "$name_re" | awk '{print $2}' | head -n1 || true)"
+  if [[ -n "${mac:-}" ]]; then
+    echo "$mac"
+    return 0
+  fi
+
+  return 1
+}
+
+connect_bluetooth() {
+  local mac=""
+
+  # Resolve MAC: prefer name, then explicit MAC if provided.
+  if [[ -n "${BT_KEYBOARD_NAME:-}" ]]; then
+    mac="$(find_mac_by_name "$BT_KEYBOARD_NAME" || true)"
+    if [[ -z "$mac" ]]; then
+      notify "Scanning for \"$BT_KEYBOARD_NAME\"..."
+      bt scan on >/dev/null || true
+      sleep "${BT_ACTIVE_SCAN_SECS:-12}"
+      bt scan off >/dev/null || true
+      mac="$(find_mac_by_name "$BT_KEYBOARD_NAME" || true)"
+    fi
+  fi
+
+  if [[ -z "$mac" ]]; then
+    notify "No device name. Set BT_KEYBOARD_NAME in .bluetooth.env."
+    return 1
+  fi
+
+  # If the device is already connected, exit early
+  if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+    notify "Already connected to $mac."
+    return 0
+  fi
+
+  # If the device isn't known yet, try a brief scan to populate the controller's cache
+  if ! bluetoothctl info "$mac" >/dev/null 2>&1; then
+    notify "Refreshing device cache for $mac..."
+    bt scan on >/dev/null || true
+    sleep "${BT_ACTIVE_SCAN_SECS:-12}"
+    bt scan off >/dev/null || true
+  fi
+
+  # Pair if needed (idempotent)
+  if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Paired: yes"; then
+    notify "Pairing with $mac..."
+    bluetoothctl pair "$mac" >/dev/null || {
+      notify "Pairing failed for $mac"
+      return 1
+    }
+  fi
+
+  # Trust (so it auto-reconnects)
+  if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Trusted: yes"; then
+    notify "Trusting $mac..."
+    bluetoothctl trust "$mac" >/dev/null || {
+      notify "Trusting failed for $mac"
+      return 1
+    }
+  fi
+
+  notify "Connection failed."
+  return 1
+}
+
+connect_bluetooth

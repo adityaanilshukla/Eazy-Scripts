@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.bluetooth.env"
+
+# Source env
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+else
+  echo "Environment file $ENV_FILE not found."
+  command -v notify-send >/dev/null 2>&1 && notify-send "Bluetooth Forget" "Missing .bluetooth.env file"
+  exit 1
+fi
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+notify() {
+  local msg="$1"
+  if have notify-send; then notify-send "Bluetooth Forget" "$msg"; fi
+  echo "$msg"
+}
+
+# List of MACs matching the given name. Prefers Paired list, then all devices. De-duplicates.
+# Matching mode: substring (default) or exact if BT_STRICT_NAME=1
+find_macs_by_name() {
+  local name="$1"
+  local strict="${BT_STRICT_NAME:-0}"
+  local tmpfile
+  tmpfile="$(mktemp)"
+  trap 'rm -f "$tmpfile"' RETURN
+
+  if [[ "$strict" -eq 1 ]]; then
+    # exact (case-insensitive) compare on the name part
+    bluetoothctl devices Paired | awk -v IGNORECASE=1 -v n="$name" '
+      $1=="Device" {mac=$2; $1=$2=""; sub(/^  */,""); if (tolower($0)==tolower(n)) print mac}' >>"$tmpfile"
+    bluetoothctl devices | awk -v IGNORECASE=1 -v n="$name" '
+      $1=="Device" {mac=$2; $1=$2=""; sub(/^  */,""); if (tolower($0)==tolower(n)) print mac}' >>"$tmpfile"
+  else
+    # substring (case-insensitive)
+    bluetoothctl devices Paired | grep -iF "$name" | awk '$1=="Device"{print $2}' >>"$tmpfile" || true
+    bluetoothctl devices | grep -iF "$name" | awk '$1=="Device"{print $2}' >>"$tmpfile" || true
+  fi
+
+  # Unique, preserve order of first occurrence
+  awk '!seen[$0]++ {print}' "$tmpfile"
+}
+
+# Best-effort quick scan to refresh controller's cache (helps surface current RPA)
+refresh_scan() {
+  bluetoothctl --timeout "${BT_SCAN_TIMEOUT:-10}" scan on >/dev/null 2>&1 || true
+  sleep "${BT_ACTIVE_SCAN_SECS:-6}"
+  bluetoothctl scan off >/dev/null 2>&1 || true
+}
+
+disconnect_and_remove() {
+  local mac="$1"
+  # Try to disconnect first (doesn't fail the flow if not connected)
+  bluetoothctl info "$mac" >/dev/null 2>&1 && {
+    if bluetoothctl info "$mac" | grep -q "Connected: yes"; then
+      echo "Disconnecting $mac..."
+      bluetoothctl disconnect "$mac" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+  }
+
+  echo "Removing $mac..."
+  bluetoothctl remove "$mac" >/dev/null 2>&1 || true
+  sleep 1
+
+  # Verify removal
+  if bluetoothctl info "$mac" >/dev/null 2>&1; then
+    echo "Warning: $mac still present after remove (may be cached or rapidly re-advertising)."
+    return 1
+  fi
+  return 0
+}
+
+forget_bluetooth() {
+  local targets=()
+
+  # 1) Resolve by name if provided
+  if [[ -n "${BT_KEYBOARD_NAME:-}" ]]; then
+    mapfile -t targets < <(find_macs_by_name "$BT_KEYBOARD_NAME")
+    if [[ ${#targets[@]} -eq 0 ]]; then
+      echo "No devices matched \"$BT_KEYBOARD_NAME\"; refreshing scan to catch rotated addresses..."
+      refresh_scan
+      mapfile -t targets < <(find_macs_by_name "$BT_KEYBOARD_NAME")
+    fi
+  fi
+
+  # 2) If still empty, fall back to explicit MAC (if supplied)
+  if [[ ${#targets[@]} -eq 0 && -n "${BT_MOUSE_MAC:-}" ]]; then
+    targets+=("$BT_MOUSE_MAC")
+  fi
+
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    notify "No matching devices found to forget"
+    return 1
+  fi
+
+  echo "Will forget the following device addresses:"
+  printf '  - %s\n' "${targets[@]}"
+
+  local ok=0 fail=0
+  for mac in "${targets[@]}"; do
+    if disconnect_and_remove "$mac"; then
+      ((ok++))
+    else
+      ((fail++))
+    fi
+  done
+
+  if ((fail == 0)); then
+    notify "Forgot ${ok} device(s) successfully."
+    return 0
+  elif ((ok > 0)); then
+    notify "Partially forgot devices: ${ok} succeeded, ${fail} failed."
+    return 1
+  else
+    notify "Failed to forget any matching devices."
+    return 1
+  fi
+}
+
+pause_all_media() {
+  echo "Pausing media players via playerctl..."
+  playerctl --all-players pause 2>/dev/null || true
+}
+
+pause_all_media
+forget_bluetooth

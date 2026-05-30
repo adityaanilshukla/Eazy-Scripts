@@ -1,22 +1,19 @@
 #!/bin/bash
+# GUI keybind invocations don't inherit a normal shell env, so set up PATH
+# (incl. ~/.local/bin for online-zathura) and source ~/.secrets (where the
+# project-scoped Turso creds live).
+export PATH="$HOME/.local/bin:$PATH"
+[[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
 
-# Directory to search
+ZATHURA=$(command -v zathura)
+ONLINE_ZATHURA="$HOME/.local/bin/online-zathura"
+
 BOOK_DIR="$HOME/Documents"
-
-# Find all supported book types recursively
 BOOK=$(find "$BOOK_DIR" \
   -type f \( -iname "*.pdf" -o -iname "*.epub" -o -iname "*.mobi" -o -iname "*.djvu" \) 2>/dev/null |
   rofi -dmenu -i -p "📚 Select a book")
 
-# check if selected value is non zero
+# Route through online-zathura so Pull happens on open and Push on close.
 if [[ -n "$BOOK" ]]; then
-  # if PDF open with zathura
-  # if [[ "$BOOK" == *"pdf"* ]]; then
-  #   zathura "$BOOK" &
-  # # if any other book format open with KOReader
-  # else
-    koreader "$BOOK" &
-  fi
-# else
-  # notify-send "KOReader" "No book selected."
+  ZATHURA_BINARY="$ZATHURA" "$ONLINE_ZATHURA" "$BOOK" &
 fi

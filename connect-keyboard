@@ -100,7 +100,15 @@ connect_bluetooth() {
     }
   fi
 
-  notify "Connection failed."
+  notify "Connecting to $mac..."
+  if bluetoothctl connect "$mac" >/dev/null 2>&1; then
+    sleep 2
+    if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+      notify "Connected to $mac."
+      return 0
+    fi
+  fi
+  notify "Connection failed for $mac."
   return 1
 }
 

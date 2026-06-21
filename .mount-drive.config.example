@@ -1,0 +1,9 @@
+# mount-drive config. One drive per line: UUID|MOUNTPOINT|DISPLAY_NAME
+# Lines starting with # and blank lines are ignored.
+# UUIDs come from `lsblk -o NAME,UUID`.
+# MOUNTPOINT must exist on disk and be owned by you (the script will not create it).
+#
+# Examples:
+# 4C6E97526E973424|/home/aditya/Media/Sanctuary|Sanctuary
+# 1C03-2149|/home/aditya/Media/echoSD|echoSD
+# 9EC4-6986|/home/aditya/Media/Music-backup|Music-backup

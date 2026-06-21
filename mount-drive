@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/.mount-drive.config"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+notify() {
+  if have notify-send; then notify-send "Mount Drive" "$1"; fi
+  echo "$1"
+}
+
+for dep in lsblk findmnt jq rofi zenity udisksctl; do
+  if ! have "$dep"; then
+    notify "Missing dependency: $dep"
+    exit 1
+  fi
+done
+
+declare -A CFG_MOUNTPOINT=()
+declare -A CFG_NAME=()
+if [[ -f "$CONFIG_FILE" ]]; then
+  while IFS='|' read -r uuid mp name || [[ -n "${uuid:-}" ]]; do
+    [[ -z "${uuid:-}" || "$uuid" =~ ^[[:space:]]*# ]] && continue
+    uuid="${uuid//[[:space:]]/}"
+    [[ -z "$uuid" ]] && continue
+    CFG_MOUNTPOINT["$uuid"]="$mp"
+    CFG_NAME["$uuid"]="${name:-$uuid}"
+  done < "$CONFIG_FILE"
+fi
+
+mapfile -t DEV_ROWS < <(
+  lsblk --json -o NAME,PATH,TYPE,SIZE,FSTYPE,UUID,LABEL,MOUNTPOINT,HOTPLUG,RM 2>/dev/null \
+  | jq -r '
+      [ .. | objects | select(.type=="part" or .type=="crypt" or .type=="rom") ]
+      | .[]
+      | select(.uuid != null and .fstype != null and .fstype != "" and .fstype != "swap")
+      | select((.hotplug == true) or (.rm == true))
+      | [.path, .uuid, .fstype, .size, (.label // ""), (.mountpoint // "")]
+      | @tsv
+    '
+)
+
+ENTRIES=()
+for row in "${DEV_ROWS[@]}"; do
+  IFS=$'\t' read -r path uuid fstype size label mountpoint <<<"$row"
+  [[ -n "$mountpoint" ]] && continue
+  if findmnt -nS "UUID=$uuid" >/dev/null 2>&1; then continue; fi
+  if [[ -n "${CFG_MOUNTPOINT[$uuid]:-}" ]]; then
+    name="${CFG_NAME[$uuid]}"
+    line="$(printf '%-18s %6s  %-8s  [config]  %s' "$name" "$size" "$fstype" "${CFG_MOUNTPOINT[$uuid]}")"
+    ENTRIES+=("config|$uuid|$path|$fstype|$line")
+  else
+    display="${label:-$path}"
+    line="$(printf '%-18s %6s  %-8s  [auto]    %s' "$display" "$size" "$fstype" "$path")"
+    ENTRIES+=("auto|$uuid|$path|$fstype|$line")
+  fi
+done
+
+if [[ ${#ENTRIES[@]} -eq 0 ]]; then
+  notify "No unmounted drives detected."
+  exit 0
+fi
+
+MENU_INPUT=""
+for entry in "${ENTRIES[@]}"; do
+  MENU_INPUT+="${entry##*|}"$'\n'
+done
+MENU_INPUT="${MENU_INPUT%$'\n'}"
+
+CHOICE="$(printf '%s\n' "$MENU_INPUT" | rofi -dmenu -i -p "mount" -no-custom)" || exit 0
+[[ -z "$CHOICE" ]] && exit 0
+
+SELECTED=""
+for entry in "${ENTRIES[@]}"; do
+  if [[ "${entry##*|}" == "$CHOICE" ]]; then
+    SELECTED="$entry"
+    break
+  fi
+done
+[[ -z "$SELECTED" ]] && { notify "Selection did not match any entry."; exit 1; }
+
+IFS='|' read -r SRC UUID DEVPATH FSTYPE _ <<<"$SELECTED"
+
+mount_via_udisks() {
+  local out
+  if out="$(udisksctl mount -b "$DEVPATH" 2>&1)"; then
+    notify "$out"
+  else
+    notify "udisksctl failed: $out"
+    exit 1
+  fi
+}
+
+mount_via_sudo() {
+  local mp="${CFG_MOUNTPOINT[$UUID]}"
+  if [[ ! -d "$mp" ]]; then
+    notify "Mountpoint $mp does not exist. Create it first."
+    exit 1
+  fi
+  local opts=""
+  local type_arg=()
+  case "$FSTYPE" in
+    vfat|exfat|fuseblk)
+      opts="uid=$(id -u),gid=$(id -g),umask=0022"
+      ;;
+    ntfs|ntfs3)
+      opts="uid=$(id -u),gid=$(id -g),umask=0022,force"
+      type_arg=(-t ntfs3)
+      ;;
+  esac
+  local pw
+  pw="$(zenity --password --title="Mount ${CFG_NAME[$UUID]}" 2>/dev/null || true)"
+  if [[ -z "$pw" ]]; then
+    notify "Cancelled."
+    exit 0
+  fi
+  local err rc
+  if [[ -n "$opts" ]]; then
+    err="$(echo "$pw" | sudo -S -p '' mount "${type_arg[@]}" -U "$UUID" -o "$opts" "$mp" 2>&1)" \
+      && rc=0 || rc=$?
+  else
+    err="$(echo "$pw" | sudo -S -p '' mount "${type_arg[@]}" -U "$UUID" "$mp" 2>&1)" \
+      && rc=0 || rc=$?
+  fi
+  unset pw
+  if [[ $rc -eq 0 ]]; then
+    notify "Mounted ${CFG_NAME[$UUID]} at $mp"
+  else
+    notify "Mount failed: $err"
+    exit 1
+  fi
+}
+
+case "$SRC" in
+  config) mount_via_sudo ;;
+  auto)   mount_via_udisks ;;
+  *)      notify "Unknown source: $SRC"; exit 1 ;;
+esac

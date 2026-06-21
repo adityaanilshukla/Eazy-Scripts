@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/.mount-drive.config"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+notify() {
+  if have notify-send; then notify-send "Unmount Drive" "$1"; fi
+  echo "$1"
+}
+
+for dep in lsblk findmnt jq rofi zenity udisksctl; do
+  if ! have "$dep"; then
+    notify "Missing dependency: $dep"
+    exit 1
+  fi
+done
+
+declare -A CFG_MOUNTPOINT=()
+declare -A CFG_NAME=()
+declare -A CFG_UUID_BY_MP=()
+if [[ -f "$CONFIG_FILE" ]]; then
+  while IFS='|' read -r uuid mp name || [[ -n "${uuid:-}" ]]; do
+    [[ -z "${uuid:-}" || "$uuid" =~ ^[[:space:]]*# ]] && continue
+    uuid="${uuid//[[:space:]]/}"
+    [[ -z "$uuid" ]] && continue
+    CFG_MOUNTPOINT["$uuid"]="$mp"
+    CFG_NAME["$uuid"]="${name:-$uuid}"
+    CFG_UUID_BY_MP["$mp"]="$uuid"
+  done < "$CONFIG_FILE"
+fi
+
+mapfile -t DEV_ROWS < <(
+  lsblk --json -o NAME,PATH,TYPE,SIZE,FSTYPE,UUID,LABEL,MOUNTPOINT,HOTPLUG,RM 2>/dev/null \
+  | jq -r '
+      [ .. | objects | select(.type=="part" or .type=="crypt" or .type=="rom") ]
+      | .[]
+      | select(.uuid != null and .fstype != null and .fstype != "" and .fstype != "swap")
+      | select((.hotplug == true) or (.rm == true))
+      | select(.mountpoint != null and .mountpoint != "")
+      | [.path, .uuid, .fstype, .size, (.label // ""), .mountpoint]
+      | @tsv
+    '
+)
+
+ENTRIES=()
+for row in "${DEV_ROWS[@]}"; do
+  IFS=$'\t' read -r path uuid fstype size label mountpoint <<<"$row"
+  if [[ -n "${CFG_MOUNTPOINT[$uuid]:-}" ]]; then
+    name="${CFG_NAME[$uuid]}"
+    src="config"
+  elif [[ "$mountpoint" == /run/media/* ]]; then
+    name="${label:-$(basename "$mountpoint")}"
+    src="auto"
+  else
+    name="${label:-$path}"
+    src="other"
+  fi
+  line="$(printf '%-18s %6s  %-8s  [%-6s]  %s' "$name" "$size" "$fstype" "$src" "$mountpoint")"
+  ENTRIES+=("$src|$uuid|$path|$mountpoint|$line")
+done
+
+if [[ ${#ENTRIES[@]} -eq 0 ]]; then
+  notify "No mounted removable drives."
+  exit 0
+fi
+
+MENU_INPUT=""
+for entry in "${ENTRIES[@]}"; do
+  MENU_INPUT+="${entry##*|}"$'\n'
+done
+MENU_INPUT="${MENU_INPUT%$'\n'}"
+
+CHOICE="$(printf '%s\n' "$MENU_INPUT" | rofi -dmenu -i -p "unmount" -no-custom)" || exit 0
+[[ -z "$CHOICE" ]] && exit 0
+
+SELECTED=""
+for entry in "${ENTRIES[@]}"; do
+  if [[ "${entry##*|}" == "$CHOICE" ]]; then
+    SELECTED="$entry"
+    break
+  fi
+done
+[[ -z "$SELECTED" ]] && { notify "Selection did not match any entry."; exit 1; }
+
+IFS='|' read -r SRC UUID DEVPATH MP _ <<<"$SELECTED"
+
+power_off_parent() {
+  local parent_name parent_path out
+  parent_name="$(lsblk -no PKNAME "$DEVPATH" 2>/dev/null | head -n1)"
+  if [[ -z "$parent_name" ]]; then
+    notify "Could not find parent disk for $DEVPATH (skipping power-off)."
+    return 0
+  fi
+  parent_path="/dev/$parent_name"
+  if out="$(udisksctl power-off -b "$parent_path" 2>&1)"; then
+    notify "Powered off $parent_path. Safe to unplug."
+  else
+    notify "Power-off failed for $parent_path: $out"
+  fi
+}
+
+unmount_via_udisks() {
+  local out
+  if out="$(udisksctl unmount -b "$DEVPATH" 2>&1)"; then
+    notify "$out"
+    power_off_parent
+  else
+    notify "udisksctl failed: $out"
+    exit 1
+  fi
+}
+
+unmount_via_sudo() {
+  local pw
+  pw="$(zenity --password --title="Unmount $(basename "$MP")" 2>/dev/null || true)"
+  if [[ -z "$pw" ]]; then
+    notify "Cancelled."
+    exit 0
+  fi
+  local err rc
+  err="$(echo "$pw" | sudo -S -p '' umount "$MP" 2>&1)" && rc=0 || rc=$?
+  unset pw
+  if [[ $rc -eq 0 ]]; then
+    notify "Unmounted $MP"
+    power_off_parent
+  else
+    notify "Unmount failed: $err"
+    exit 1
+  fi
+}
+
+case "$SRC" in
+  config|other) unmount_via_sudo ;;
+  auto)         unmount_via_udisks ;;
+  *)            notify "Unknown source: $SRC"; exit 1 ;;
+esac

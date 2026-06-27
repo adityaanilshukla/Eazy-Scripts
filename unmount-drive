@@ -17,17 +17,19 @@ for dep in lsblk findmnt jq rofi zenity udisksctl; do
   fi
 done
 
-declare -A CFG_MOUNTPOINT=()
-declare -A CFG_NAME=()
-declare -A CFG_UUID_BY_MP=()
+declare -A CFG_UUID_NAME=()
+declare -A CFG_LBL_NAME=()
 if [[ -f "$CONFIG_FILE" ]]; then
-  while IFS='|' read -r uuid mp name || [[ -n "${uuid:-}" ]]; do
-    [[ -z "${uuid:-}" || "$uuid" =~ ^[[:space:]]*# ]] && continue
-    uuid="${uuid//[[:space:]]/}"
-    [[ -z "$uuid" ]] && continue
-    CFG_MOUNTPOINT["$uuid"]="$mp"
-    CFG_NAME["$uuid"]="${name:-$uuid}"
-    CFG_UUID_BY_MP["$mp"]="$uuid"
+  while IFS='|' read -r key mp name || [[ -n "${key:-}" ]]; do
+    [[ -z "${key:-}" || "$key" =~ ^[[:space:]]*# ]] && continue
+    key="${key//[[:space:]]/}"
+    [[ -z "$key" ]] && continue
+    if [[ "$key" == LABEL:* ]]; then
+      lbl="${key#LABEL:}"
+      CFG_LBL_NAME["$lbl"]="${name:-$lbl}"
+    else
+      CFG_UUID_NAME["$key"]="${name:-$key}"
+    fi
   done < "$CONFIG_FILE"
 fi
 
@@ -47,18 +49,26 @@ mapfile -t DEV_ROWS < <(
 ENTRIES=()
 for row in "${DEV_ROWS[@]}"; do
   IFS=$'\t' read -r path uuid fstype size label mountpoint <<<"$row"
-  if [[ -n "${CFG_MOUNTPOINT[$uuid]:-}" ]]; then
-    name="${CFG_NAME[$uuid]}"
-    src="config"
+  if [[ -n "${CFG_UUID_NAME[$uuid]:-}" ]]; then
+    name="${CFG_UUID_NAME[$uuid]}"
+    tag="config"
+  elif [[ -n "$label" && -n "${CFG_LBL_NAME[$label]:-}" ]]; then
+    name="${CFG_LBL_NAME[$label]}"
+    tag="config"
   elif [[ "$mountpoint" == /run/media/* ]]; then
     name="${label:-$(basename "$mountpoint")}"
-    src="auto"
+    tag="auto"
   else
     name="${label:-$path}"
-    src="other"
+    tag="other"
   fi
-  line="$(printf '%-18s %6s  %-8s  [%-6s]  %s' "$name" "$size" "$fstype" "$src" "$mountpoint")"
-  ENTRIES+=("$src|$uuid|$path|$mountpoint|$line")
+  if [[ "$mountpoint" == /run/media/* ]]; then
+    dispatch="udisks"
+  else
+    dispatch="sudo"
+  fi
+  line="$(printf '%-18s %6s  %-8s  [%-6s]  %s' "$name" "$size" "$fstype" "$tag" "$mountpoint")"
+  ENTRIES+=("$dispatch|$uuid|$path|$mountpoint|$line")
 done
 
 if [[ ${#ENTRIES[@]} -eq 0 ]]; then
@@ -84,7 +94,7 @@ for entry in "${ENTRIES[@]}"; do
 done
 [[ -z "$SELECTED" ]] && { notify "Selection did not match any entry."; exit 1; }
 
-IFS='|' read -r SRC UUID DEVPATH MP _ <<<"$SELECTED"
+IFS='|' read -r DISPATCH UUID DEVPATH MP _ <<<"$SELECTED"
 
 power_off_parent() {
   local parent_name parent_path out
@@ -131,8 +141,8 @@ unmount_via_sudo() {
   fi
 }
 
-case "$SRC" in
-  config|other) unmount_via_sudo ;;
-  auto)         unmount_via_udisks ;;
-  *)            notify "Unknown source: $SRC"; exit 1 ;;
+case "$DISPATCH" in
+  sudo)   unmount_via_sudo ;;
+  udisks) unmount_via_udisks ;;
+  *)      notify "Unknown dispatch: $DISPATCH"; exit 1 ;;
 esac

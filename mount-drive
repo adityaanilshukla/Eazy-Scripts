@@ -17,15 +17,23 @@ for dep in lsblk findmnt jq rofi zenity udisksctl; do
   fi
 done
 
-declare -A CFG_MOUNTPOINT=()
-declare -A CFG_NAME=()
+declare -A CFG_UUID_MP=()
+declare -A CFG_UUID_NAME=()
+declare -A CFG_LBL_MP=()
+declare -A CFG_LBL_NAME=()
 if [[ -f "$CONFIG_FILE" ]]; then
-  while IFS='|' read -r uuid mp name || [[ -n "${uuid:-}" ]]; do
-    [[ -z "${uuid:-}" || "$uuid" =~ ^[[:space:]]*# ]] && continue
-    uuid="${uuid//[[:space:]]/}"
-    [[ -z "$uuid" ]] && continue
-    CFG_MOUNTPOINT["$uuid"]="$mp"
-    CFG_NAME["$uuid"]="${name:-$uuid}"
+  while IFS='|' read -r key mp name || [[ -n "${key:-}" ]]; do
+    [[ -z "${key:-}" || "$key" =~ ^[[:space:]]*# ]] && continue
+    key="${key//[[:space:]]/}"
+    [[ -z "$key" ]] && continue
+    if [[ "$key" == LABEL:* ]]; then
+      lbl="${key#LABEL:}"
+      CFG_LBL_MP["$lbl"]="$mp"
+      CFG_LBL_NAME["$lbl"]="${name:-$lbl}"
+    else
+      CFG_UUID_MP["$key"]="$mp"
+      CFG_UUID_NAME["$key"]="${name:-$key}"
+    fi
   done < "$CONFIG_FILE"
 fi
 
@@ -46,14 +54,21 @@ for row in "${DEV_ROWS[@]}"; do
   IFS=$'\t' read -r path uuid fstype size label mountpoint <<<"$row"
   [[ -n "$mountpoint" ]] && continue
   if findmnt -nS "UUID=$uuid" >/dev/null 2>&1; then continue; fi
-  if [[ -n "${CFG_MOUNTPOINT[$uuid]:-}" ]]; then
-    name="${CFG_NAME[$uuid]}"
-    line="$(printf '%-18s %6s  %-8s  [config]  %s' "$name" "$size" "$fstype" "${CFG_MOUNTPOINT[$uuid]}")"
-    ENTRIES+=("config|$uuid|$path|$fstype|$line")
+  cfg_mp=""; cfg_name=""
+  if [[ -n "${CFG_UUID_MP[$uuid]:-}" ]]; then
+    cfg_mp="${CFG_UUID_MP[$uuid]}"
+    cfg_name="${CFG_UUID_NAME[$uuid]}"
+  elif [[ -n "$label" && -n "${CFG_LBL_MP[$label]:-}" ]]; then
+    cfg_mp="${CFG_LBL_MP[$label]}"
+    cfg_name="${CFG_LBL_NAME[$label]}"
+  fi
+  if [[ -n "$cfg_mp" ]]; then
+    line="$(printf '%-18s %6s  %-8s  [config]  %s' "$cfg_name" "$size" "$fstype" "$cfg_mp")"
+    ENTRIES+=("config|$uuid|$path|$fstype|$cfg_mp|$cfg_name|$line")
   else
     display="${label:-$path}"
     line="$(printf '%-18s %6s  %-8s  [auto]    %s' "$display" "$size" "$fstype" "$path")"
-    ENTRIES+=("auto|$uuid|$path|$fstype|$line")
+    ENTRIES+=("auto|$uuid|$path|$fstype|||$line")
   fi
 done
 
@@ -80,7 +95,7 @@ for entry in "${ENTRIES[@]}"; do
 done
 [[ -z "$SELECTED" ]] && { notify "Selection did not match any entry."; exit 1; }
 
-IFS='|' read -r SRC UUID DEVPATH FSTYPE _ <<<"$SELECTED"
+IFS='|' read -r SRC UUID DEVPATH FSTYPE MP NAME _ <<<"$SELECTED"
 
 mount_via_udisks() {
   local out
@@ -93,9 +108,8 @@ mount_via_udisks() {
 }
 
 mount_via_sudo() {
-  local mp="${CFG_MOUNTPOINT[$UUID]}"
-  if [[ ! -d "$mp" ]]; then
-    notify "Mountpoint $mp does not exist. Create it first."
+  if [[ ! -d "$MP" ]]; then
+    notify "Mountpoint $MP does not exist. Create it first."
     exit 1
   fi
   local opts=""
@@ -110,22 +124,22 @@ mount_via_sudo() {
       ;;
   esac
   local pw
-  pw="$(zenity --password --title="Mount ${CFG_NAME[$UUID]}" 2>/dev/null || true)"
+  pw="$(zenity --password --title="Mount $NAME" 2>/dev/null || true)"
   if [[ -z "$pw" ]]; then
     notify "Cancelled."
     exit 0
   fi
   local err rc
   if [[ -n "$opts" ]]; then
-    err="$(echo "$pw" | sudo -S -p '' mount "${type_arg[@]}" -U "$UUID" -o "$opts" "$mp" 2>&1)" \
+    err="$(echo "$pw" | sudo -S -p '' mount "${type_arg[@]}" "$DEVPATH" -o "$opts" "$MP" 2>&1)" \
       && rc=0 || rc=$?
   else
-    err="$(echo "$pw" | sudo -S -p '' mount "${type_arg[@]}" -U "$UUID" "$mp" 2>&1)" \
+    err="$(echo "$pw" | sudo -S -p '' mount "${type_arg[@]}" "$DEVPATH" "$MP" 2>&1)" \
       && rc=0 || rc=$?
   fi
   unset pw
   if [[ $rc -eq 0 ]]; then
-    notify "Mounted ${CFG_NAME[$UUID]} at $mp"
+    notify "Mounted $NAME at $MP"
   else
     notify "Mount failed: $err"
     exit 1
